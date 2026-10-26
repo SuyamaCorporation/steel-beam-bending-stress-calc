@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>鉄骨梁 曲げ応力 簡易計算ツール</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-4">
+<div class="max-w-4xl mx-auto">
+  <h1 class="text-2xl font-bold text-center text-slate-800 mb-1">鉄骨梁 曲げ応力 簡易計算ツール</h1>
+  <p class="text-center text-gray-500 text-sm mb-6">等分布荷重を受ける単純支持梁の計算（E = 205,000 N/mm²）</p>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Input panel -->
+    <div class="bg-white rounded-xl shadow p-5">
+      <h2 class="font-semibold text-gray-700 mb-4">入力</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">H形鋼断面</label>
+          <select id="sectionSelect" class="w-full border rounded px-3 py-2 text-sm">
+            <option value="H100">H-100×100×6×8</option>
+            <option value="H150">H-150×150×7×10</option>
+            <option value="H200" selected>H-200×200×8×12</option>
+            <option value="H250">H-250×250×9×14</option>
+            <option value="H300">H-300×300×10×15</option>
+            <option value="H400">H-400×400×13×21</option>
+          </select>
+        </div>
+
+        <div id="sectionProps" class="bg-gray-50 rounded p-3 text-sm space-y-1 text-gray-600">
+          <!-- Filled dynamically -->
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">スパン L (m)</label>
+          <input type="number" id="spanL" value="6" min="0.1" max="30" step="0.1" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">等分布荷重 w (kN/m)</label>
+          <input type="number" id="loadW" value="10" min="0" step="0.1" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+
+        <button id="calcBtn" class="w-full bg-slate-700 text-white py-2 rounded font-medium hover:bg-slate-800" aria-label="計算する">計算する</button>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div class="bg-white rounded-xl shadow p-5">
+      <h2 class="font-semibold text-gray-700 mb-4">計算結果</h2>
+      <div id="results" class="space-y-3 text-sm">
+        <p class="text-gray-400">左パネルで計算してください</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Diagram -->
+  <div class="bg-white rounded-xl shadow p-5 mt-6">
+    <h2 class="font-semibold text-gray-700 mb-3">モーメント図 / せん断力図</h2>
+    <canvas id="diagramCanvas" class="w-full border border-gray-200 rounded" height="300"></canvas>
+  </div>
+</div>
+
+<script>
+// H-section database: [H, B, tw, tf, A(cm²), Ix(cm⁴), Zx(cm³), Iy(cm⁴)]
+const SECTIONS = {
+  H100: { label:'H-100×100×6×8',  H:100, B:100, tw:6,  tf:8,  A:21.90, Ix:383,    Zx: 76.5, Iy:134    },
+  H150: { label:'H-150×150×7×10', H:150, B:150, tw:7,  tf:10, A:40.14, Ix:1640,   Zx:219,   Iy:563    },
+  H200: { label:'H-200×200×8×12', H:200, B:200, tw:8,  tf:12, A:63.53, Ix:4720,   Zx:472,   Iy:1600   },
+  H250: { label:'H-250×250×9×14', H:250, B:250, tw:9,  tf:14, A:91.43, Ix:10800,  Zx:867,   Iy:3650   },
+  H300: { label:'H-300×300×10×15',H:300, B:300, tw:10, tf:15, A:119.8, Ix:20400,  Zx:1360,  Iy:6750   },
+  H400: { label:'H-400×400×13×21',H:400, B:400, tw:13, tf:21, A:218.7, Ix:66600,  Zx:3330,  Iy:22400  },
+};
+
+const E = 205000; // N/mm²
+
+function updateSectionProps() {
+  const key = document.getElementById('sectionSelect').value;
+  const s = SECTIONS[key];
+  document.getElementById('sectionProps').innerHTML = `
+    <div class="grid grid-cols-2 gap-1">
+      <span class="text-gray-500">断面積 A:</span><span class="font-medium">${s.A} cm²</span>
+      <span class="text-gray-500">断面二次モーメント Ix:</span><span class="font-medium">${s.Ix.toLocaleString()} cm⁴</span>
+      <span class="text-gray-500">断面係数 Zx:</span><span class="font-medium">${s.Zx.toLocaleString()} cm³</span>
+    </div>
+  `;
+}
+
+document.getElementById('sectionSelect').addEventListener('change', updateSectionProps);
+updateSectionProps();
+
+document.getElementById('calcBtn').addEventListener('click', () => {
+  const key = document.getElementById('sectionSelect').value;
+  const s = SECTIONS[key];
+  const L_m = parseFloat(document.getElementById('spanL').value);
+  const w_kNm = parseFloat(document.getElementById('loadW').value);
+
+  const L = L_m * 1000; // mm
+  const w = w_kNm * 1000 / 1000; // N/mm  (kN/m → N/mm: kN/m * 1000N/kN / 1000mm/m = 1 N/mm)
+  const Ix_mm4 = s.Ix * 1e4; // cm⁴ → mm⁴
+  const Zx_mm3 = s.Zx * 1e3; // cm³ → mm³
+
+  // M = wL²/8  (N·mm)
+  const M = w * L * L / 8;
+  const M_kNm = M / 1e6; // N·mm → kN·m
+
+  // Q = wL/2  (N)
+  const Q = w * L / 2;
+  const Q_kN = Q / 1000;
+
+  // σ = M / Zx  (N/mm²)
+  const sigma = M / Zx_mm3;
+
+  // δ = 5wL⁴ / (384EI)  (mm)
+  const delta = (5 * w * Math.pow(L, 4)) / (384 * E * Ix_mm4);
+
+  const resultsDiv = document.getElementById('results');
+  const limitSigma = 235; // SS400相当
+  const sigmaOK = sigma <= limitSigma;
+  const limitDelta = L / 300;
+  const deltaOK = delta <= limitDelta;
+
+  resultsDiv.innerHTML = `
+    <div class="space-y-2">
+      <div class="flex justify-between items-center bg-blue-50 rounded px-3 py-2">
+        <span class="text-gray-700 font-medium">最大曲げモーメント M</span>
+        <span class="font-bold text-blue-700">${M_kNm.toFixed(2)} kN·m</span>
+      </div>
+      <div class="flex justify-between items-center bg-purple-50 rounded px-3 py-2">
+        <span class="text-gray-700 font-medium">最大せん断力 Q</span>
+        <span class="font-bold text-purple-700">${Q_kN.toFixed(2)} kN</span>
+      </div>
+      <div class="flex justify-between items-center bg-orange-50 rounded px-3 py-2">
+        <span class="text-gray-700 font-medium">最大曲げ応力 σ</span>
+        <span class="font-bold ${sigmaOK ? 'text-green-700' : 'text-red-700'}">${sigma.toFixed(1)} N/mm² ${sigmaOK ? '✓' : '⚠ 許容(235)超過'}</span>
+      </div>
+      <div class="flex justify-between items-center bg-teal-50 rounded px-3 py-2">
+        <span class="text-gray-700 font-medium">最大たわみ δ</span>
+        <span class="font-bold ${deltaOK ? 'text-green-700' : 'text-red-700'}">${delta.toFixed(1)} mm ${deltaOK ? '✓' : '⚠ L/300超過'}</span>
+      </div>
+      <div class="text-xs text-gray-500 mt-2">
+        <p>計算式: M=wL²/8, Q=wL/2, δ=5wL⁴/(384EI)</p>
+        <p>E=205,000 N/mm², 許容応力=235 N/mm²(参考), たわみ制限=L/300(参考)</p>
+      </div>
+    </div>
+  `;
+
+  drawDiagram(L_m, w_kNm, M_kNm, Q_kN);
+});
+
+function drawDiagram(L, w, M_max, Q_max) {
+  const canvas = document.getElementById('diagramCanvas');
+  const W = canvas.offsetWidth || 700;
+  canvas.width = W;
+  const H = 300;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  const PAD = 50;
+  const midY = H / 2;
+  const beamY = 60;
+  const halfH = 90;
+
+  ctx.font = '11px sans-serif';
+
+  // --- Beam diagram (top) ---
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(PAD, beamY); ctx.lineTo(W - PAD, beamY);
+  ctx.stroke();
+
+  // Supports (triangles)
+  [[PAD, beamY], [W - PAD, beamY]].forEach(([x, y]) => {
+    ctx.fillStyle = '#334155';
+    ctx.beginPath();
+    ctx.moveTo(x, y); ctx.lineTo(x - 10, y + 18); ctx.lineTo(x + 10, y + 18); ctx.closePath();
+    ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x - 14, y + 20); ctx.lineTo(x + 14, y + 20); ctx.stroke();
+  });
+
+  // Load arrows
+  ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 1;
+  const nArrows = 10;
+  for (let i = 0; i <= nArrows; i++) {
+    const x = PAD + (W - 2 * PAD) * i / nArrows;
+    ctx.beginPath(); ctx.moveTo(x, beamY - 22); ctx.lineTo(x, beamY - 2);
+    // arrowhead
+    ctx.moveTo(x - 3, beamY - 8); ctx.lineTo(x, beamY - 2); ctx.lineTo(x + 3, beamY - 8);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(PAD, beamY - 22); ctx.lineTo(W - PAD, beamY - 22); ctx.stroke();
+  ctx.fillStyle = '#ef4444'; ctx.textAlign = 'center';
+  ctx.fillText(`w = ${w} kN/m`, W / 2, beamY - 28);
+
+  // L label
+  ctx.fillStyle = '#334155'; ctx.textAlign = 'center';
+  ctx.fillText(`L = ${L} m`, W / 2, beamY + 36);
+
+  // --- Moment diagram ---
+  const bmY = beamY + 60;
+  ctx.strokeStyle = '#374151'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD, bmY); ctx.lineTo(W - PAD, bmY); ctx.stroke();
+  ctx.fillStyle = '#6b7280'; ctx.textAlign = 'right';
+  ctx.fillText('M図', PAD - 4, bmY + 4);
+
+  ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2;
+  ctx.fillStyle = 'rgba(59,130,246,0.15)';
+  ctx.beginPath();
+  ctx.moveTo(PAD, bmY);
+  const steps = 100;
+  for (let i = 0; i <= steps; i++) {
+    const x_frac = i / steps;
+    const x = PAD + x_frac * (W - 2 * PAD);
+    // Parabolic: M(x) = wLx/2 - wx²/2, max at midspan
+    const m_frac = 4 * x_frac * (1 - x_frac); // normalized [0,1]
+    const y = bmY + m_frac * halfH * 0.8;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W - PAD, bmY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(PAD, bmY);
+  for (let i = 0; i <= steps; i++) {
+    const x_frac = i / steps;
+    const x = PAD + x_frac * (W - 2 * PAD);
+    const m_frac = 4 * x_frac * (1 - x_frac);
+    const y = bmY + m_frac * halfH * 0.8;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W - PAD, bmY);
+  ctx.stroke();
+  ctx.fillStyle = '#1d4ed8'; ctx.textAlign = 'center';
+  ctx.fillText(`M_max = ${M_max.toFixed(1)} kN·m`, W / 2, bmY + halfH * 0.8 + 14);
+
+  // --- Shear force diagram ---
+  const sfY = bmY + halfH * 0.8 + 30;
+  ctx.strokeStyle = '#374151'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD, sfY); ctx.lineTo(W - PAD, sfY); ctx.stroke();
+  ctx.fillStyle = '#6b7280'; ctx.textAlign = 'right';
+  ctx.fillText('Q図', PAD - 4, sfY + 4);
+
+  const sfH = 35;
+  ctx.strokeStyle = '#7c3aed'; ctx.lineWidth = 2;
+  ctx.fillStyle = 'rgba(124,58,237,0.15)';
+  ctx.beginPath();
+  ctx.moveTo(PAD, sfY - sfH);
+  ctx.lineTo(W / 2, sfY - sfH);
+  ctx.lineTo(W / 2, sfY + sfH);
+  ctx.lineTo(W - PAD, sfY + sfH);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(PAD, sfY - sfH);
+  ctx.lineTo(W / 2, sfY - sfH);
+  ctx.lineTo(W / 2, sfY + sfH);
+  ctx.lineTo(W - PAD, sfY + sfH);
+  ctx.stroke();
+  ctx.fillStyle = '#5b21b6'; ctx.textAlign = 'center';
+  ctx.fillText(`+${Q_max.toFixed(1)} kN`, PAD + 60, sfY - sfH - 4);
+  ctx.fillText(`-${Q_max.toFixed(1)} kN`, W - PAD - 60, sfY + sfH + 12);
+}
+</script>
+</body>
+</html>
